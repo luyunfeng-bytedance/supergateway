@@ -124,11 +124,11 @@ async function stdioToSse(args: StdioToSseArgs) {
   })
 
   const server = new Server(
-    { name: 'supergateway', version: getVersion() },
-    { capabilities: {} }
+      { name: 'supergateway', version: getVersion() },
+      { capabilities: {} }
   )
 
-  const sessions: Record<string, { transport: SSEServerTransport; response: express.Response }> = {}
+  const sessions: Record<string, { transport: SSEServerTransport; response: express.Response, isProcessing: boolean}> = {}
 
   const app = express()
 
@@ -155,7 +155,7 @@ async function stdioToSse(args: StdioToSseArgs) {
 
     const sessionId = sseTransport.sessionId
     if (sessionId) {
-      sessions[sessionId] = { transport: sseTransport, response: res }
+      sessions[sessionId] = { transport: sseTransport, response: res, isProcessing:false }
     }
 
     sseTransport.onmessage = (msg: JSONRPCMessage) => {
@@ -179,6 +179,14 @@ async function stdioToSse(args: StdioToSseArgs) {
     })
   })
 
+  const canIn = function f() {
+    for (const [sid, session] of Object.entries(sessions)) {
+      if (session.isProcessing) {
+        return false
+      }
+    }
+    return true
+  }
   // @ts-ignore
   app.post(messagePath, async (req, res) => {
     const sessionId = req.query.sessionId as string
@@ -189,6 +197,15 @@ async function stdioToSse(args: StdioToSseArgs) {
     const session = sessions[sessionId]
     if (session?.transport?.handlePostMessage) {
       logger.info(`POST to SSE transport (session ${sessionId})`)
+
+      while(true){
+        if (canIn()){
+          session.isProcessing = true
+          break
+        }
+        await sleep(10);
+      }
+
       await session.transport.handlePostMessage(req, res)
     } else {
       res.status(503).send(`No active SSE connection for session ${sessionId}`)
@@ -212,8 +229,12 @@ async function stdioToSse(args: StdioToSseArgs) {
         const jsonMsg = JSON.parse(line)
         logger.info('Child → SSE:', jsonMsg)
         for (const [sid, session] of Object.entries(sessions)) {
+          if (!session.isProcessing){
+            continue
+          }
           try {
             session.transport.send(jsonMsg)
+            session.isProcessing=false
           } catch (err) {
             logger.error(`Failed to send to session ${sid}:`, err)
             delete sessions[sid]
@@ -247,8 +268,8 @@ async function sseToStdio(args: SseToStdioArgs) {
 
   const sseTransport = new SSEClientTransport(new URL(sseUrl))
   const sseClient = new Client(
-    { name: 'supergateway', version: getVersion() },
-    { capabilities: {} }
+      { name: 'supergateway', version: getVersion() },
+      { capabilities: {} }
   )
 
   sseTransport.onerror = err => {
@@ -263,8 +284,8 @@ async function sseToStdio(args: SseToStdioArgs) {
   logger.info('SSE connected')
 
   const stdioServer = new Server(
-    sseClient.getServerVersion() ?? { name: 'supergateway', version: getVersion() },
-    { capabilities: sseClient.getServerCapabilities() }
+      sseClient.getServerVersion() ?? { name: 'supergateway', version: getVersion() },
+      { capabilities: sseClient.getServerCapabilities() }
   )
   const stdioTransport = new StdioServerTransport()
   await stdioServer.connect(stdioTransport)
@@ -286,13 +307,13 @@ async function sseToStdio(args: SseToStdioArgs) {
       } catch (err) {
         logger.error('Request error:', err)
         const errorCode =
-          err && typeof err === 'object' && 'code' in err
-            ? (err as any).code
-            : -32000
+            err && typeof err === 'object' && 'code' in err
+                ? (err as any).code
+                : -32000
         let errorMsg =
-          err && typeof err === 'object' && 'message' in err
-            ? (err as any).message
-            : 'Internal error'
+            err && typeof err === 'object' && 'message' in err
+                ? (err as any).message
+                : 'Internal error'
         const prefix = `MCP error ${errorCode}:`
         if (errorMsg.startsWith(prefix)) {
           errorMsg = errorMsg.slice(prefix.length).trim()
@@ -307,10 +328,10 @@ async function sseToStdio(args: SseToStdioArgs) {
         return
       }
       const response = wrapResponse(
-        req,
-        result.hasOwnProperty('error')
-          ? { error: { ...result.error } }
-          : { result: { ...result } }
+          req,
+          result.hasOwnProperty('error')
+              ? { error: { ...result.error } }
+              : { result: { ...result } }
       )
       logger.info('Response:', response)
       process.stdout.write(JSON.stringify(response) + '\n')
@@ -325,51 +346,51 @@ async function sseToStdio(args: SseToStdioArgs) {
 
 async function main() {
   const argv = yargs(hideBin(process.argv))
-    .option('stdio', {
-      type: 'string',
-      description: 'Command to run an MCP server over Stdio'
-    })
-    .option('sse', {
-      type: 'string',
-      description: 'SSE URL to connect to'
-    })
-    .option('port', {
-      type: 'number',
-      default: 8000,
-      description: '(stdio→SSE) Port to run on'
-    })
-    .option('baseUrl', {
-      type: 'string',
-      default: '',
-      description: '(stdio→SSE) Base URL for SSE clients'
-    })
-    .option('ssePath', {
-      type: 'string',
-      default: '/sse',
-      description: '(stdio→SSE) Path for SSE subscriptions'
-    })
-    .option('messagePath', {
-      type: 'string',
-      default: '/message',
-      description: '(stdio→SSE) Path for SSE messages'
-    })
-    .option('logLevel', {
-      choices: ['info', 'none'] as const,
-      default: 'info',
-      description: 'Set logging level: "info" or "none"'
-    })
-    .option('cors', {
-      type: 'boolean',
-      default: false,
-      description: 'Enable CORS'
-    })
-    .option('healthEndpoint', {
-      type: 'array',
-      default: [],
-      description: 'One or more endpoints returning "ok", e.g. --healthEndpoint /healthz --healthEndpoint /readyz'
-    })
-    .help()
-    .parseSync()
+      .option('stdio', {
+        type: 'string',
+        description: 'Command to run an MCP server over Stdio'
+      })
+      .option('sse', {
+        type: 'string',
+        description: 'SSE URL to connect to'
+      })
+      .option('port', {
+        type: 'number',
+        default: 8000,
+        description: '(stdio→SSE) Port to run on'
+      })
+      .option('baseUrl', {
+        type: 'string',
+        default: '',
+        description: '(stdio→SSE) Base URL for SSE clients'
+      })
+      .option('ssePath', {
+        type: 'string',
+        default: '/sse',
+        description: '(stdio→SSE) Path for SSE subscriptions'
+      })
+      .option('messagePath', {
+        type: 'string',
+        default: '/message',
+        description: '(stdio→SSE) Path for SSE messages'
+      })
+      .option('logLevel', {
+        choices: ['info', 'none'] as const,
+        default: 'info',
+        description: 'Set logging level: "info" or "none"'
+      })
+      .option('cors', {
+        type: 'boolean',
+        default: false,
+        description: 'Enable CORS'
+      })
+      .option('healthEndpoint', {
+        type: 'array',
+        default: [],
+        description: 'One or more endpoints returning "ok", e.g. --healthEndpoint /healthz --healthEndpoint /readyz'
+      })
+      .help()
+      .parseSync()
 
   const hasStdio = Boolean(argv.stdio)
   const hasSse = Boolean(argv.sse)
@@ -391,8 +412,8 @@ async function main() {
         ssePath: argv.ssePath,
         messagePath: argv.messagePath,
         logger: argv.logLevel === 'none'
-          ? noneLogger
-          : { info: log, error: logStderr },
+            ? noneLogger
+            : { info: log, error: logStderr },
         enableCors: argv.cors,
         healthEndpoints: argv.healthEndpoint as string[]
       })
@@ -400,8 +421,8 @@ async function main() {
       await sseToStdio({
         sseUrl: argv.sse!,
         logger: argv.logLevel === 'none'
-          ? noneLogger
-          : { info: logStderr, error: logStderr }
+            ? noneLogger
+            : { info: logStderr, error: logStderr }
       })
     }
   } catch (err) {
@@ -411,3 +432,7 @@ async function main() {
 }
 
 main()
+
+function sleep(ms:number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
