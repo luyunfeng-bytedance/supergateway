@@ -166,12 +166,11 @@ async function stdioToSse(args: StdioToSseArgs) {
       }else{
         while(true){
           if (canIn()){
-            logger.info(`POST to SSE111 transport (session ${sessionId})`)
+            logger.info(`Get lock (session ${sessionId})`)
             sessions[sessionId].isProcessing = true
             break
-          }else{
-            logger.info(`POST to SSE222 transport (session ${sessionId})`)
           }
+          logger.info(`Waiting lock (session ${sessionId})`)
           sleep(10);
         }
       }
