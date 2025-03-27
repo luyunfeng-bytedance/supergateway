@@ -160,6 +160,23 @@ async function stdioToSse(args: StdioToSseArgs) {
 
     sseTransport.onmessage = (msg: JSONRPCMessage) => {
       logger.info(`SSE → Child (session ${sessionId}): ${JSON.stringify(msg)}`)
+
+      if ("method" in msg && msg["method"] == "notifications/initialized"){
+
+      }else{
+        while(true){
+          if (canIn()){
+            logger.info(`POST to SSE111 transport (session ${sessionId})`)
+            sessions[sessionId].isProcessing = true
+            break
+          }else{
+            logger.info(`POST to SSE222 transport (session ${sessionId})`)
+          }
+          sleep(10);
+        }
+      }
+
+
       child.stdin.write(JSON.stringify(msg) + '\n')
     }
 
@@ -197,15 +214,6 @@ async function stdioToSse(args: StdioToSseArgs) {
     const session = sessions[sessionId]
     if (session?.transport?.handlePostMessage) {
       logger.info(`POST to SSE transport (session ${sessionId})`)
-
-      while(true){
-        if (canIn()){
-          session.isProcessing = true
-          break
-        }
-        await sleep(10);
-      }
-
       await session.transport.handlePostMessage(req, res)
     } else {
       res.status(503).send(`No active SSE connection for session ${sessionId}`)
