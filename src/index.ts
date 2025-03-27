@@ -147,6 +147,9 @@ async function stdioToSse(args: StdioToSseArgs) {
     })
   }
 
+  const timeoutMs= 500
+  const sleepOneLoop = 50
+
   app.get(ssePath, async (req, res) => {
     logger.info(`New SSE connection from ${req.ip}`)
 
@@ -164,14 +167,23 @@ async function stdioToSse(args: StdioToSseArgs) {
       if ("method" in msg && msg["method"] == "notifications/initialized"){
 
       }else{
+        var waitingTime= 0
         while(true){
-          if (canIn()){
-            logger.info(`Get lock (session ${sessionId})`)
+          if (checkLock()){
             sessions[sessionId].isProcessing = true
+            logger.info(`Get lock (session ${sessionId})`)
             break
           }
+
+          if (waitingTime >= timeoutMs){
+            releaseAllLock()
+            logger.info(`Timeout, release (session ${sessionId})`)
+            waitingTime = 0
+          }
+
           logger.info(`Waiting lock (session ${sessionId})`)
-          sleep(10);
+          sleep(sleepOneLoop);
+          waitingTime += sleepOneLoop
         }
       }
 
@@ -195,7 +207,7 @@ async function stdioToSse(args: StdioToSseArgs) {
     })
   })
 
-  const canIn = function f() {
+  const checkLock = function f() {
     for (const [sid, session] of Object.entries(sessions)) {
       if (session.isProcessing) {
         return false
@@ -203,6 +215,14 @@ async function stdioToSse(args: StdioToSseArgs) {
     }
     return true
   }
+
+  const releaseAllLock = function f() {
+    for (const [sid, session] of Object.entries(sessions)) {
+        session.isProcessing = false
+    }
+    return true
+  }
+
   // @ts-ignore
   app.post(messagePath, async (req, res) => {
     const sessionId = req.query.sessionId as string
