@@ -66,6 +66,7 @@ interface StdioToSseArgs {
   logger: Logger
   enableCors: boolean
   healthEndpoints: string[]
+  identifySessionWithMsgID: boolean
 }
 
 const onSignals = ({ logger }: { logger: Logger }) => {
@@ -99,8 +100,10 @@ async function stdioToSse(args: StdioToSseArgs) {
     messagePath,
     logger,
     enableCors,
-    healthEndpoints
+    healthEndpoints,
+    identifySessionWithMsgID
   } = args
+
 
   logger.info('Starting...')
   logger.info('Supergateway is supported by Superinterface - https://superinterface.ai')
@@ -114,10 +117,14 @@ async function stdioToSse(args: StdioToSseArgs) {
 
   logger.info(`  - CORS enabled: ${enableCors}`)
   logger.info(`  - Health endpoints: ${healthEndpoints.length ? healthEndpoints.join(', ') : '(none)'}`)
+  logger.info(`  - identifySessionWithMsgID: ${identifySessionWithMsgID}`)
+
 
   onSignals({ logger })
 
+  logger.info(`run command: ${stdioCmd}`)
   const child: ChildProcessWithoutNullStreams = spawn(stdioCmd, { shell: true })
+
   child.on('exit', (code, signal) => {
     logger.error(`Child exited: code=${code}, signal=${signal}`)
     process.exit(code ?? 1)
@@ -128,7 +135,7 @@ async function stdioToSse(args: StdioToSseArgs) {
       { capabilities: {} }
   )
 
-  const sessions: Record<string, { transport: SSEServerTransport; response: express.Response, isProcessing: boolean}> = {}
+  const sessions: Record<string, { transport: SSEServerTransport; response: express.Response, isProcessing: boolean, isMsgIDInt:boolean}> = {}
 
   const app = express()
 
@@ -158,35 +165,44 @@ async function stdioToSse(args: StdioToSseArgs) {
 
     const sessionId = sseTransport.sessionId
     if (sessionId) {
-      sessions[sessionId] = { transport: sseTransport, response: res, isProcessing:false }
+      sessions[sessionId] = { transport: sseTransport, response: res, isProcessing:false, isMsgIDInt: true }
     }
 
     sseTransport.onmessage = (msg: JSONRPCMessage) => {
       logger.info(`SSE → Child (session ${sessionId}): ${JSON.stringify(msg)}`)
 
-      if ("method" in msg && msg["method"] == "notifications/initialized"){
+      if (identifySessionWithMsgID){
+        if ("id" in msg){
+          sessions[sessionId].isMsgIDInt = Number.isInteger(msg["id"])
 
-      }else{
-        var waitingTime= 0
-        while(true){
-          if (checkLock()){
-            sessions[sessionId].isProcessing = true
-            logger.info(`Get lock (session ${sessionId})`)
-            break
-          }
-
-          if (waitingTime >= timeoutMs){
-            releaseAllLock()
-            logger.info(`Timeout, release (session ${sessionId})`)
-            waitingTime = 0
-          }
-
-          logger.info(`Waiting lock (session ${sessionId})`)
-          sleep(sleepOneLoop);
-          waitingTime += sleepOneLoop
+          logger.info(`SSE → Child (msg.id origin: ${msg["id"]})`);
+          msg["id"] = `${sessionId}_${msg["id"]}`
+          logger.info(`SSE → Child (msg.id current: ${msg["id"]})`);
         }
       }
 
+      // if ("method" in msg && msg["method"] == "notifications/initialized"){
+      //
+      // }else{
+      //   var waitingTime= 0
+      //   while(true){
+      //     if (checkLock()){
+      //       sessions[sessionId].isProcessing = true
+      //       logger.info(`Get lock (session ${sessionId})`)
+      //       break
+      //     }
+      //
+      //     if (waitingTime >= timeoutMs){
+      //       releaseAllLock()
+      //       logger.info(`Timeout, release (session ${sessionId})`)
+      //       waitingTime = 0
+      //     }
+      //
+      //     logger.info(`Waiting lock (session ${sessionId})`)
+      //     sleep(sleepOneLoop);
+      //     waitingTime += sleepOneLoop
+      //   }
+      // }
 
       child.stdin.write(JSON.stringify(msg) + '\n')
     }
@@ -229,6 +245,7 @@ async function stdioToSse(args: StdioToSseArgs) {
     if (!sessionId) {
       return res.status(400).send('Missing sessionId parameter')
     }
+    logger.info(`app.post (session ${sessionId})`, req.body)
 
     const session = sessions[sessionId]
     if (session?.transport?.handlePostMessage) {
@@ -254,17 +271,48 @@ async function stdioToSse(args: StdioToSseArgs) {
       if (!line.trim()) return
       try {
         const jsonMsg = JSON.parse(line)
-        logger.info('Child → SSE:', jsonMsg)
-        for (const [sid, session] of Object.entries(sessions)) {
-          if (!session.isProcessing){
-            continue
+        logger.info('Child → SSE origin:', jsonMsg)
+        if (identifySessionWithMsgID){
+          logger.info('Child → SSE jsonMsg.id origin:', jsonMsg.id)
+          const pair = jsonMsg.id.split('_');
+          const sid = pair[0];
+
+          logger.info('Child → SSE sid:', sid)
+
+          if (!sessions[sid]){
+            logger.error(`session ${sid} not found`);
+            return
           }
+
+          if (sessions[sid].isMsgIDInt){
+            jsonMsg.id = parseInt(pair[1]);
+          }else{
+            jsonMsg.id = pair[1];
+          }
+          logger.info('Child → SSE jsonMsg.id current:', jsonMsg.id)
+
+          logger.info('Child → SSE after:', jsonMsg)
+
           try {
-            session.transport.send(jsonMsg)
-            session.isProcessing=false
-          } catch (err) {
-            logger.error(`Failed to send to session ${sid}:`, err)
-            delete sessions[sid]
+            sessions[sid].transport.send(jsonMsg);
+            // sessions[sid].isProcessing = false;
+          }
+          catch (err) {
+            logger.error(`Failed to send to session ${sid}:`, err);
+            delete sessions[sid];
+          }
+        }else{
+          for (const [sid, session] of Object.entries(sessions)) {
+            if (!session.isProcessing){
+              continue
+            }
+            try {
+              session.transport.send(jsonMsg)
+              session.isProcessing=false
+            } catch (err) {
+              logger.error(`Failed to send to session ${sid}:`, err)
+              delete sessions[sid]
+            }
           }
         }
       } catch {
@@ -442,7 +490,8 @@ async function main() {
             ? noneLogger
             : { info: log, error: logStderr },
         enableCors: argv.cors,
-        healthEndpoints: argv.healthEndpoint as string[]
+        healthEndpoints: argv.healthEndpoint as string[],
+        identifySessionWithMsgID: true
       })
     } else {
       await sseToStdio({

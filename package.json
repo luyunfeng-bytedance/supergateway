@@ -1,10 +1,10 @@
 {
-  "name": "supergateway",
-  "version": "2.3.2",
-  "description": "Run MCP stdio servers over SSE or visa versa",
+  "name": "custom-supergateway",
+  "version": "1.0.2",
+  "description": "Fork from supergateway",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/supercorp-ai/supergateway.git"
+    "url": "git+https://github.com/luyunfeng-bytedance/supergateway.git"
   },
   "keywords": [
     "mcp",
@@ -16,7 +16,7 @@
   ],
   "type": "module",
   "bin": {
-    "supergateway": "dist/index.js"
+    "custom-supergateway": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
